@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KM2.0 — лицензии</title>
+<style>
+:root{color-scheme:dark;font:15px system-ui;background:#0c1018;color:#e7edf7}
+body{max-width:1100px;margin:28px auto;padding:0 16px}h1{font-size:26px;margin-bottom:4px}
+small,.muted{color:#9ca9bd}.card{background:#141b27;border:1px solid #283447;border-radius:14px;padding:18px;margin:16px 0}
+input,select,button{font:inherit;border-radius:9px;padding:10px 12px;border:1px solid #34435a;background:#0f1520;color:#eef3fb}
+input{max-width:100%;box-sizing:border-box}button{cursor:pointer;background:#263b5b}button.danger{background:#542b34}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.row>*{flex:1 1 130px}
+table{width:100%;border-collapse:collapse;min-width:780px}th,td{text-align:left;border-bottom:1px solid #293548;padding:10px 8px;font-size:13px}
+.tablewrap{overflow:auto}.pill{padding:3px 7px;border-radius:7px;background:#203b32}.bad{background:#512b33}
+#status{white-space:pre-wrap;color:#b8c8e0}.keyout{font:600 16px ui-monospace,monospace;word-break:break-all;color:#9fe4b8}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<h1>KM2.0 License API</h1><div class="muted">Управление ключами и привязками устройств</div>
+<section class="card" id="login">
+<h2>Вход администратора</h2>
+<div class="row"><input id="user" autocomplete="username" placeholder="Логин"><input id="pass" type="password" autocomplete="current-password" placeholder="Пароль"><button id="loginBtn">Войти</button></div>
+<p class="muted">Данные используются только в текущей вкладке и не сохраняются в localStorage.</p>
+</section>
+<div id="app" class="hidden">
+<section class="card">
+<h2>Создать ключ</h2>
+<div class="row"><label>Срок <select id="unit"><option value="days">Дни</option><option value="hours">Часы</option><option value="unlimited">Бессрочный</option></select></label><label>Количество <input id="amount" type="number" min="1" max="3650" value="30"></label><input id="note" maxlength="200" placeholder="Заметка (необязательно)"><button id="createBtn">Создать</button></div>
+<div id="newKey" class="keyout"></div><p id="copyHint" class="muted"></p>
+</section>
+<section class="card">
+<div class="row"><h2 style="flex:3">Ключи</h2><button id="refreshBtn">Обновить список</button></div>
+<div class="tablewrap"><table><thead><tr><th>ID</th><th>Ключ</th><th>Состояние</th><th>Срок</th><th>Устройство</th><th>Последняя активность</th><th>Действия</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+</div>
+<p id="status"></p>
+<script>
+let auth=null;
+const $=id=>document.getElementById(id);
+function say(t){$("status").textContent=t}
+function b64(s){return btoa(unescape(encodeURIComponent(s)))}
+async function api(path,opts={}){
+  const headers=new Headers(opts.headers||{});
+  headers.set("Authorization","Basic "+auth);
+  if(opts.body) headers.set("Content-Type","application/json");
+  const r=await fetch(path,{...opts,headers,cache:"no-store"});
+  let data={};try{data=await r.json()}catch{}
+  if(!r.ok)throw new Error(data.detail||("HTTP "+r.status));
+  return data;
+}
+$("loginBtn").onclick=async()=>{
+  auth=b64($("user").value+":"+$("pass").value);
+  try{await api("/api/admin/me");$("login").classList.add("hidden");$("app").classList.remove("hidden");$("pass").value="";say("Вход выполнен.");await refresh()}
+  catch(e){auth=null;say("Ошибка входа: "+e.message)}
+};
+async function refresh(){
+ try{
+  const data=await api("/api/admin/keys");
+  $("rows").innerHTML="";
+  for(const x of data.items){
+   const tr=document.createElement("tr");
+   const status=x.active&&!x.expired?"Активен":(!x.active?"Отозван":"Истёк");
+   const expiry=x.expiresAt?new Date(x.expiresAt).toLocaleString():"Бессрочный";
+   const device=x.deviceBound?(x.deviceLabel||"Привязан"):"Не привязан";
+   const last=x.lastSeenAt?new Date(x.lastSeenAt).toLocaleString():"—";
+   const cells=[x.id,x.prefix+"…",status,expiry,device,last];
+   for(const c of cells){const td=document.createElement("td");td.textContent=c;tr.appendChild(td)}
+   const actions=document.createElement("td");
+   const reset=document.createElement("button");reset.textContent="Сбросить устройство";reset.onclick=async()=>{if(confirm("Сбросить привязку устройства у ключа #"+x.id+"?"))try{await api(`/api/admin/keys/${x.id}/reset-device`,{method:"POST"});await refresh()}catch(e){say(e.message)}};
+   const revoke=document.createElement("button");revoke.textContent="Отозвать";revoke.className="danger";revoke.style.marginLeft="5px";revoke.disabled=!x.active;revoke.onclick=async()=>{if(confirm("Отозвать ключ #"+x.id+"?"))try{await api(`/api/admin/keys/${x.id}`,{method:"DELETE"});await refresh()}catch(e){say(e.message)}};
+   actions.append(reset,revoke);tr.appendChild(actions);$("rows").appendChild(tr);
+  }
+ }catch(e){say("Ошибка: "+e.message);if((e.message||"").includes("401")){auth=null;$("login").classList.remove("hidden");$("app").classList.add("hidden")}}
+}
+$("createBtn").onclick=async()=>{
+ try{
+  const unit=$("unit").value, amount=Number($("amount").value);
+  const payload=unit==="unlimited"?{hours:0,days:0,note:$("note").value||null}:{hours:unit==="hours"?amount:0,days:unit==="days"?amount:0,note:$("note").value||null};
+  const d=await api("/api/admin/keys",{method:"POST",body:JSON.stringify(payload)});
+  $("newKey").textContent=d.key;
+  $("copyHint").textContent="Скопируй сейчас: полный ключ показывается только один раз.";
+  try{await navigator.clipboard.writeText(d.key);$("copyHint").textContent+=" Ключ скопирован."}catch{}
+  await refresh();say("Ключ создан.");
+ }catch(e){say("Ошибка: "+e.message)}
+};
+$("refreshBtn").onclick=refresh;
+$("unit").onchange=()=>{$("amount").disabled=$("unit").value==="unlimited"};
+</script>
+</body></html>
